@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Checkout build payload
         uses: actions/checkout@v4
+        with:
+          show-progress: false
 
       - name: Reconstruct verified source archive
         shell: bash
@@ -42,13 +44,36 @@ jobs:
           corepack prepare pnpm@10.15.0 --activate
           pnpm --version
 
-      - name: Install dependencies and run deterministic checks
+      - name: Install dependencies
         shell: bash
         working-directory: app
         run: |
-          set -euo pipefail
-          pnpm install --no-frozen-lockfile
-          pnpm run check
+          set +e
+          pnpm install --no-frozen-lockfile --reporter=append-only > ../pnpm-install.log 2>&1
+          status=$?
+          tail -n 160 ../pnpm-install.log
+          exit $status
+
+      - name: Run deterministic checks
+        shell: bash
+        working-directory: app
+        run: |
+          set +e
+          pnpm run check > ../checks.log 2>&1
+          status=$?
+          cat ../checks.log
+          exit $status
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Stitch-build-diagnostics
+          path: |
+            pnpm-install.log
+            checks.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Install checksum-pinned Zig 0.16.0
         shell: bash
