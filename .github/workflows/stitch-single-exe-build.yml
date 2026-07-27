@@ -25,7 +25,7 @@ jobs:
           $bytes = [Convert]::FromBase64String($builder.ToString())
           [System.IO.File]::WriteAllBytes("$PWD\stitch-source.tar.xz", $bytes)
           $hash = (Get-FileHash -Algorithm SHA256 "$PWD\stitch-source.tar.xz").Hash.ToLowerInvariant()
-          if ($hash -ne 'e8a438b4f754a8be8d138de14052dab21c3a2be032445fa6ecce3d5a32ae7543') {
+          if ($hash -ne 'ab26f3346bff2a5cc2b22e1ca923f32c48e172295d41025ab5de5ca31db9f828') {
             throw "Stitch source archive hash mismatch: $hash"
           }
           New-Item -ItemType Directory -Force "$PWD\stitch-src" | Out-Null
