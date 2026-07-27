@@ -1,0 +1,73 @@
+name: Stitch single exe proof
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore and verify Stitch source
+        shell: pwsh
+        run: |
+          $builder = [System.Text.StringBuilder]::new()
+          Get-ChildItem stitch-min\chunk-* | Sort-Object Name | ForEach-Object {
+            [void]$builder.Append([System.IO.File]::ReadAllText($_.FullName))
+          }
+          $bytes = [Convert]::FromBase64String($builder.ToString())
+          [System.IO.File]::WriteAllBytes("$PWD\stitch-source.tar.xz", $bytes)
+          $hash = (Get-FileHash -Algorithm SHA256 "$PWD\stitch-source.tar.xz").Hash.ToLowerInvariant()
+          if ($hash -ne 'e8a438b4f754a8be8d138de14052dab21c3a2be032445fa6ecce3d5a32ae7543') {
+            throw "Stitch source archive hash mismatch: $hash"
+          }
+          New-Item -ItemType Directory -Force "$PWD\stitch-src" | Out-Null
+          tar -xf "$PWD\stitch-source.tar.xz" -C "$PWD\stitch-src"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.15.0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+
+      - name: Install pinned pnpm
+        shell: pwsh
+        working-directory: stitch-src
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.15.0 --activate
+          pnpm --version
+
+      - name: Install dependencies
+        working-directory: stitch-src
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build and prove final one-file executable
+        shell: pwsh
+        working-directory: stitch-src
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-single-exe.ps1
+
+      - name: Verify artifact
+        shell: pwsh
+        working-directory: stitch-src
+        run: |
+          $exe = Resolve-Path dist\Stitch.exe
+          if ((Get-Item $exe).Length -lt 1000000) { throw 'Stitch.exe is unexpectedly small' }
+          Get-FileHash -Algorithm SHA256 $exe
+          Get-Content dist\Stitch.exe.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Stitch.exe
+          path: stitch-src/dist/Stitch.exe
+          if-no-files-found: error
+          compression-level: 0
