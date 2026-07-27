@@ -54,7 +54,17 @@ jobs:
       - name: Build and prove final one-file executable
         shell: pwsh
         working-directory: stitch-src
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-single-exe.ps1
+        run: |
+          & powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-single-exe.ps1 *>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stitch-build-log
+          path: stitch-src/build.log
+          if-no-files-found: warn
 
       - name: Verify artifact
         shell: pwsh
