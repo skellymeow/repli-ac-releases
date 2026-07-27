@@ -1,0 +1,180 @@
+name: Build Stitch Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - stitch-build
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout build payload
+        uses: actions/checkout@v4
+
+      - name: Reconstruct verified source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find source -maxdepth 1 -name 'part-*' | wc -l)" -eq 8
+          cat source/part-* | tr -d '\r\n\t ' | base64 --decode > stitch-source.zip
+          echo '0df9d242a64acbd04b4affe2cc5522ca4b336efb025f4816e6200985f9102cba  stitch-source.zip' | sha256sum --check
+          mkdir app
+          unzip -q stitch-source.zip -d app
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+
+      - name: Enable pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.15.0 --activate
+          pnpm --version
+
+      - name: Install dependencies and run deterministic checks
+        shell: bash
+        working-directory: app
+        run: |
+          set -euo pipefail
+          pnpm install --no-frozen-lockfile
+          pnpm run check
+
+      - name: Install checksum-pinned Zig 0.16.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --output zig.tar.xz https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+          echo '70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  zig.tar.xz' | sha256sum --check
+          tar -xJf zig.tar.xz
+          echo "NATIVE_SDK_ZIG=$PWD/zig-x86_64-linux-0.16.0/zig" >> "$GITHUB_ENV"
+
+      - name: Cross-compile Native SDK UI for Windows
+        shell: bash
+        working-directory: app
+        run: |
+          set -euo pipefail
+          pnpm exec native check .
+          pnpm exec native build . --yes -Dtarget=x86_64-windows-gnu
+          test -f zig-out/bin/stitch.exe
+
+      - name: Assemble self-contained Windows app
+        shell: bash
+        working-directory: app
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          mkdir -p dist/app/runtime
+          cp zig-out/bin/stitch.exe dist/app/StitchUI.exe
+          cp -R agent server config plugin dist/app/
+
+          "$NATIVE_SDK_ZIG" cc launcher/main.c \
+            -target x86_64-windows-gnu \
+            -O2 -DUNICODE -D_UNICODE -municode -mwindows \
+            -lbcrypt -luser32 -lkernel32 -ladvapi32 \
+            -o dist/app/Stitch.exe
+          test -f dist/app/Stitch.exe
+
+          curl --fail --location --retry 3 --output node-win.zip https://nodejs.org/download/release/v24.18.0/node-v24.18.0-win-x64.zip
+          echo '0ae68406b42d7725661da979b1403ec9926da205c6770827f33aac9d8f26e821  node-win.zip' | sha256sum --check
+          unzip -q node-win.zip
+          cp node-v24.18.0-win-x64/node.exe dist/app/runtime/node.exe
+
+          cat > dist/app/package.json <<'JSON'
+          {
+            "name": "stitch-runtime",
+            "version": "0.1.1",
+            "private": true,
+            "type": "module",
+            "engines": { "node": ">=24" },
+            "dependencies": {
+              "@openrouter/ai-sdk-provider": "3.0.0",
+              "ai": "7.0.37",
+              "eve": "0.27.6",
+              "mcp-proxy": "6.5.4",
+              "zod": "4.4.3"
+            }
+          }
+          JSON
+          (
+            cd dist/app
+            npm_config_os=win32 npm_config_cpu=x64 npm install --omit=dev --ignore-scripts --no-audit --no-fund
+          )
+          test -f dist/app/node_modules/eve/bin/eve.js
+          test -f dist/app/node_modules/mcp-proxy/package.json
+
+      - name: Build one-click installer and portable archive
+        shell: bash
+        working-directory: app
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nsis
+          cat > installer/Stitch.nsi <<'NSI'
+          Unicode True
+          Name "Stitch"
+          OutFile "../dist/StitchSetup.exe"
+          InstallDir "$LOCALAPPDATA\Programs\Stitch"
+          InstallDirRegKey HKCU "Software\Stitch" "InstallDir"
+          RequestExecutionLevel user
+          SetCompressor /SOLID lzma
+          ShowInstDetails show
+          ShowUninstDetails show
+
+          Page directory
+          Page instfiles
+          UninstPage uninstConfirm
+          UninstPage instfiles
+
+          Section "Stitch" SEC_MAIN
+            SetShellVarContext current
+            SetOutPath "$INSTDIR"
+            File /r "../dist/app/*"
+            WriteRegStr HKCU "Software\Stitch" "InstallDir" "$INSTDIR"
+            WriteUninstaller "$INSTDIR\Uninstall.exe"
+            CreateDirectory "$SMPROGRAMS\Stitch"
+            CreateShortcut "$SMPROGRAMS\Stitch\Stitch.lnk" "$INSTDIR\Stitch.exe" "" "$INSTDIR\Stitch.exe"
+            CreateShortcut "$DESKTOP\Stitch.lnk" "$INSTDIR\Stitch.exe" "" "$INSTDIR\Stitch.exe"
+          SectionEnd
+
+          Section "Uninstall"
+            SetShellVarContext current
+            Delete "$DESKTOP\Stitch.lnk"
+            Delete "$SMPROGRAMS\Stitch\Stitch.lnk"
+            RMDir "$SMPROGRAMS\Stitch"
+            RMDir /r "$INSTDIR"
+            DeleteRegKey HKCU "Software\Stitch"
+          SectionEnd
+          NSI
+          makensis installer/Stitch.nsi
+          (
+            cd dist/app
+            zip -q -9 -r ../Stitch-portable-windows-x64.zip .
+          )
+          (
+            cd dist
+            sha256sum StitchSetup.exe Stitch-portable-windows-x64.zip > SHA256SUMS.txt
+          )
+          ls -lh dist/StitchSetup.exe dist/Stitch-portable-windows-x64.zip
+
+      - name: Upload Windows release
+        uses: actions/upload-artifact@v4
+        with:
+          name: Stitch-Windows-x64
+          path: |
+            app/dist/StitchSetup.exe
+            app/dist/Stitch-portable-windows-x64.zip
+            app/dist/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
