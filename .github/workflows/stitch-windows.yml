@@ -31,6 +31,8 @@ jobs:
           echo '0df9d242a64acbd04b4affe2cc5522ca4b336efb025f4816e6200985f9102cba  stitch-source.zip' | sha256sum --check
           mkdir app
           unzip -q stitch-source.zip -d app
+          cp patches/eve.ts app/agent/channels/eve.ts
+          node -e "const fs=require('fs');const p='app/package.json';const j=JSON.parse(fs.readFileSync(p));j.engines.node='>=24';fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"
 
       - name: Set up Node 24
         uses: actions/setup-node@v4
