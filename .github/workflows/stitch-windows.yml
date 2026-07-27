@@ -66,11 +66,11 @@ jobs:
           cat ../checks.log
           exit $status
 
-      - name: Upload diagnostics
+      - name: Upload validation diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Stitch-build-diagnostics
+          name: Stitch-validation-diagnostics
           path: |
             pnpm-install.log
             checks.log
@@ -90,10 +90,24 @@ jobs:
         shell: bash
         working-directory: app
         run: |
-          set -euo pipefail
-          pnpm exec native check .
-          pnpm exec native build . --yes -Dtarget=x86_64-windows-gnu
-          test -f zig-out/bin/stitch.exe
+          set +e
+          {
+            pnpm exec native check .
+            pnpm exec native build . --yes -Dtarget=x86_64-windows-gnu
+            test -f zig-out/bin/stitch.exe
+          } > ../native-build.log 2>&1
+          status=$?
+          cat ../native-build.log
+          exit $status
+
+      - name: Upload native build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Stitch-native-build-diagnostics
+          path: native-build.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Assemble self-contained Windows app
         shell: bash
